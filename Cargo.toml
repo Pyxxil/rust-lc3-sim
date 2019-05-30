@@ -1,0 +1,18 @@
+[package]
+name = "lc3sim"
+version = "0.1.0"
+authors = ["Josh Hill <josh.hill189@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = "*"
+crossterm = "0.9"
+
+[dev-dependencies]
+criterion = "0.2"
+
+[[bench]]
+name = "bench"
+harness = false
