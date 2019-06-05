@@ -1,7 +1,9 @@
-use crossterm::{input, InputEvent, KeyEvent, AsyncReader, terminal, Terminal};
 use std::fs::File;
 use std::io;
-use std::io::{stdout, Read, Stdout, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::str;
+
+use crossterm::{AsyncReader, InputEvent, KeyEvent};
 
 const CLK: usize = 0xFFFE;
 const KBSR: usize = 0xFE00;
@@ -26,18 +28,102 @@ const RESERVED_OP: u16 = 0xD000;
 const LEA_OPCODE: u16 = 0xE000;
 const TRAP_OPCODE: u16 = 0xF000;
 
+pub enum Reader {
+    Keyboard(AsyncReader),
+    InFile(BufReader<File>),
+}
+
+impl Read for Reader {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        match self {
+            Reader::Keyboard(ref mut reader) => {
+                if let Some(key) = reader.next() {
+                    if let InputEvent::Keyboard(k) = key {
+                        if let KeyEvent::Char(c) = k {
+                            buf[0] = c as u8;
+                            return Ok(1);
+                        }
+                    }
+                }
+            }
+            Reader::InFile(ref mut file) => {
+                return match file.read_exact(buf) {
+                    Ok(_) => Ok(1),
+                    _ => Ok(0),
+                };
+            }
+        }
+
+        Ok(0)
+    }
+}
+
+pub enum Writer {
+    Terminal(crossterm::Terminal),
+    OutFile(BufWriter<File>),
+}
+
+impl Write for Writer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let s = str::from_utf8(&buf).unwrap();
+        match self {
+            Writer::Terminal(ref mut terminal) => match terminal.write(s) {
+                _ => {}
+            },
+            Writer::OutFile(ref mut file) => match write!(file, "{}", s) {
+                _ => {}
+            },
+        }
+
+        Ok(s.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub enum Tracer {
+    NoTrace,
+    TraceFile(BufWriter<File>, u16),
+}
+
+trait Trace {
+    fn wants(&self, instruction: u16) -> bool;
+    fn write(&mut self, string: &str);
+}
+
+impl Trace for Tracer {
+    fn wants(&self, instruction: u16) -> bool {
+        match self {
+            Tracer::NoTrace => false,
+            Tracer::TraceFile(_, want) => (want & (1 << instruction)) != 0,
+        }
+    }
+
+    fn write(&mut self, string: &str) {
+        match self {
+            Tracer::NoTrace => {}
+            Tracer::TraceFile(ref mut file, _) => match write!(file, "{}", string) {
+                _ => {}
+            },
+        }
+    }
+}
+
 pub struct Simulator {
     memory: [u16; 0xFFFF],
     registers: [u16; 8],
     program_counter: u16,
     instruction_register: u16,
     condition_code: char,
-    input: AsyncReader,
-    display: Terminal,
+    input: Reader,
+    display: Writer,
+    tracer: Tracer,
 }
 
 impl Simulator {
-    pub fn new() -> Self {
+    pub fn new(input: Reader, display: Writer, tracer: Tracer) -> Self {
         let mut memory = [0; 0xFFFF];
         memory[CLK] = 0x8000;
         memory[DSR] = 0x8000;
@@ -47,20 +133,30 @@ impl Simulator {
             program_counter: 0,
             instruction_register: 0,
             condition_code: 'Z',
-            input: input().read_async(),
-            display: terminal(),
+            input,
+            display,
+            tracer,
         }
     }
 
-    pub fn with_operating_system(mut self, file: &str) -> Self {
-        self.load(file).unwrap_or_else(|e| println!("Error: {}", e));
-        self
+    pub fn with_operating_system(self, file: &str) -> Self {
+        self.load(file).expect("Unable to load file")
     }
 
-    pub fn load(&mut self, file: &str) -> io::Result<()> {
-        let mut file = File::open(file)?;
+    pub fn load(mut self, file: &str) -> Result<Simulator, String> {
+        let mut file = match File::open(file) {
+            Err(e) => {
+                return Err(format!("{}", e));
+            }
+            f => f.unwrap(),
+        };
         let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
+        match file.read_to_end(&mut buffer) {
+            Err(e) => {
+                return Err(format!("{}", e));
+            }
+            _ => {}
+        };
 
         let mut addr = u16::from(buffer[0]) << 8 | u16::from(buffer[1]);
 
@@ -71,7 +167,7 @@ impl Simulator {
             addr += 1;
         });
 
-        Ok(())
+        Ok(self)
     }
 
     fn update_condition_code(&mut self, value: u16) {
@@ -82,7 +178,6 @@ impl Simulator {
         } else {
             'N'
         };
-        //write!(self.display, "CONDITION CODE = {}, VALUE = {:04X}\r\n", self.condition_code, value);
     }
 
     fn fetch(&mut self) {
@@ -90,57 +185,70 @@ impl Simulator {
         self.program_counter = self.program_counter.wrapping_add(1);
     }
 
-    fn process_interrupts(&mut self) {
-        if let Some(key) = self.input.next() {
-            if let InputEvent::Keyboard(k) = key {
-                if let KeyEvent::Char(c) = k {
-                    self.memory[KBDR] = c as u16;
-                    self.memory[KBSR] = 0x8000;
-                }
-            }
-        }
-
-        if self.memory[DDR] != 0 {
-            self.display.write(
-                format!("{}{}",
-                    if self.memory[DDR] & 0xFF == 0xA {
-                        "\r"
-                    } else {
-                        ""
-                    },
-                    (self.memory[DDR] & 0xFF) as u8 as char
-            ));
-            self.memory[DDR] = 0;
-            self.memory[DSR] = 0x8000;
+    fn trace(&mut self) {
+        if self
+            .tracer
+            .wants((self.instruction_register & 0xF000) >> 12)
+        {
+            self.tracer.write(
+                format!(
+                    "After executing instruction: {:04X}\n{}Program Counter: 0x{:04X}\nCondition Code: {}\n=================================\n",
+                    self.instruction_register,
+                    (0..8).map(|i| format!("Register {}: 0x{:04X}\n", i, self.registers[i])).collect::<String>(),
+                    self.program_counter, self.condition_code
+                )
+                    .as_ref(),
+            );
         }
     }
 
     pub fn execute(&mut self) {
-        loop {
-            if self.memory[CLK] & 0x8000 == 0 {
-                break;
-            }
-
-            self.process_interrupts();
+        while self.read_memory(CLK as u16) & 0x8000 != 0 {
             self.fetch();
-            //if self.program_counter >= 0x3065 {
-            //    write!(
-            //        self.display,
-            //        "Instruction register {:04X}\r\n",
-            //        self.instruction_register
-            //    );
-            //    write!(
-            //        self.display,
-            //        "Program counter {:04X}\r\n",
-            //        self.program_counter
-            //    );
-            //}
             self.step();
-            //if self.program_counter >= 0x3065 {
-            //    for i in 0..8 {
-            //        write!(self.display, "Register {} -> {:04X}\r\n", i, self.registers[i]);
-            //    }
-            //}
+            self.trace();
+        }
+    }
+
+    fn read_memory(&mut self, address: u16) -> u16 {
+        match address as usize {
+            DDR => 0x0000,
+            KBSR => {
+                let mut buf = [0; 1];
+                match self.input.read(&mut buf) {
+                    Ok(x) if x != 0 => {
+                        self.memory[KBDR] = buf[0] as u16;
+                        0x8000
+                    }
+                    _ => 0x0000,
+                }
+            }
+            KBDR => self.memory[KBDR],
+            addr => self.memory[addr],
+        }
+    }
+
+    pub fn write_memory(&mut self, address: u16, value: u16) {
+        match address as usize {
+            KBSR | KBDR | DSR => {}
+            DDR => {
+                let _ = self
+                    .display
+                    .write(
+                        format!(
+                            "{}{}",
+                            if value & 0xFF == 0xA { "\r" } else { "" },
+                            (value & 0xFF) as u8 as char
+                        )
+                        .as_ref(),
+                    )
+                    .unwrap();
+                self.memory[DDR] = 0;
+                self.memory[DSR] = 0x8000;
+            }
+            addr => {
+                self.memory[addr] = value;
+            }
         }
     }
 
@@ -149,7 +257,6 @@ impl Simulator {
 
         match opcode {
             BR_OPCODE => {
-                //writeln!(self.display, "FOUND A BR INSTRUCTION");
                 let n = self.instruction_register & 0x0800 != 0;
                 let z = self.instruction_register & 0x0400 != 0;
                 let p = self.instruction_register & 0x0200 != 0;
@@ -163,9 +270,7 @@ impl Simulator {
                 }
             }
             ADD_OPCODE => {
-                //writeln!(self.display, "FOUND AN ADD INSTRUCTION");
                 let destination_register = (self.instruction_register & 0x0E00) >> 9;
-                //write!(self.display, "DESTINATION REGISTER => {}\r\n", destination_register);
                 let source_one =
                     self.registers[((self.instruction_register & 0x01C0) >> 6) as usize] as i16;
                 let source_two = if (self.instruction_register & 0x20) == 0 {
@@ -180,29 +285,21 @@ impl Simulator {
                 self.update_condition_code(result);
             }
             LD_OPCODE => {
-                //writeln!(self.display, "FOUND AN LD INSTRUCTION");
                 let destination_register = (self.instruction_register & 0x0E00) >> 9;
                 let offset = (((self.instruction_register & 0x1FF) << 7) as i16) >> 7;
-                let address = (self.program_counter as i16 + offset) as usize;
+                let address = (self.program_counter as i16 + offset) as u16;
 
-                if address == KBDR {
-                    self.memory[KBSR] = 0;
-                }
-
-                self.registers[destination_register as usize] =
-                    self.memory[(self.program_counter as i16 + offset) as usize];
+                self.registers[destination_register as usize] = self.read_memory(address);
                 self.update_condition_code(self.registers[destination_register as usize]);
             }
             ST_OPCODE => {
-                //writeln!(self.display, "FOUND AN ST INSTRUCTION");
                 let destination_register = (self.instruction_register & 0x0E00) >> 9;
                 let offset = (((self.instruction_register & 0x1FF) << 7) as i16) >> 7;
+                let address = (self.program_counter as i16 + offset) as u16;
 
-                self.memory[(self.program_counter as i16 + offset) as usize] =
-                    self.registers[destination_register as usize];
+                self.write_memory(address, self.registers[destination_register as usize]);
             }
             JSR_OPCODE => {
-                //writeln!(self.display, "FOUND A JSR INSTRUCTION");
                 self.registers[7] = self.program_counter;
 
                 if self.instruction_register & 0x0800 == 0 {
@@ -214,7 +311,6 @@ impl Simulator {
                 }
             }
             AND_OPCODE => {
-                //writeln!(self.display, "FOUND AN AND INSTRUCTION");
                 let destination_register = (self.instruction_register & 0x0E00) >> 9;
                 let source_one =
                     self.registers[((self.instruction_register & 0x01C0) >> 6) as usize] as i16;
@@ -230,33 +326,25 @@ impl Simulator {
                 self.update_condition_code(result);
             }
             LDR_OPCODE => {
-                //writeln!(self.display, "FOUND AN LDR INSTRUCTION");
                 let destination_register = (self.instruction_register as u16 & 0x0E00) >> 9;
                 let source_one =
                     self.registers[((self.instruction_register & 0x01C0) >> 6) as usize] as i16;
                 let source_two = (((self.instruction_register & 0x3F) << 10) as i16) >> 10;
-                let address = (source_one + source_two) as usize & 0xFFFF;
-                //write!(self.display, "ADDRESS FOR LDR = {:04X}\r\n", address);
+                let address = (source_one + source_two) as u16;
 
-                if address == KBDR {
-                    self.memory[KBSR] = 0;
-                }
-
-                self.registers[destination_register as usize] = self.memory[address];
+                self.registers[destination_register as usize] = self.read_memory(address);
                 self.update_condition_code(self.registers[destination_register as usize]);
             }
             STR_OPCODE => {
-                //writeln!(self.display, "FOUND AN STR INSTRUCTION");
                 let destination_register = (self.instruction_register & 0x0E00) >> 9;
                 let source_one =
                     self.registers[((self.instruction_register & 0x01C0) >> 6) as usize] as i16;
                 let source_two = (((self.instruction_register & 0x3F) << 10) as i16) >> 10;
+                let address = (source_one + source_two) as u16;
 
-                self.memory[(source_one + source_two) as usize] =
-                    self.registers[destination_register as usize];
+                self.write_memory(address, self.registers[destination_register as usize]);
             }
             NOT_OPCODE => {
-                //writeln!(self.display, "FOUND A NOT INSTRUCTION");
                 let destination_register = (self.instruction_register & 0x0E00) >> 9;
                 let source_one =
                     self.registers[((self.instruction_register & 0x01C0) >> 6) as usize];
@@ -265,35 +353,27 @@ impl Simulator {
                 self.update_condition_code(self.registers[destination_register as usize]);
             }
             LDI_OPCODE => {
-                //writeln!(self.display, "FOUND AN LDI INSTRUCTION!");
                 let destination_register = (self.instruction_register & 0x0E00) >> 9;
                 let offset = (((self.instruction_register & 0x1FF) << 7) as i16) >> 7;
-                let address = (self.program_counter as i16 + offset) as usize;
-                let indirect = self.memory[address] as usize;
+                let address = (self.program_counter as i16 + offset) as u16;
+                let indirect = self.read_memory(address);
 
-                if indirect == KBDR {
-                    self.memory[KBSR] = 0;
-                }
-
-                self.registers[destination_register as usize] = self.memory[indirect];
+                self.registers[destination_register as usize] = self.read_memory(indirect);
                 self.update_condition_code(self.registers[destination_register as usize]);
             }
             STI_OPCODE => {
-                //writeln!(self.display, "FOUND AN STI INSTRUCTION");
                 let destination_register = (self.instruction_register & 0x0E00) >> 9;
                 let offset = (((self.instruction_register & 0x1FF) << 7) as i16) >> 7;
+                let address = (self.program_counter as i16 + offset) as u16;
+                let indirect = self.read_memory(address);
 
-                self.memory
-                    [self.memory[(self.program_counter as i16 + offset) as usize] as usize] =
-                    self.registers[destination_register as usize];
+                self.write_memory(indirect, self.registers[destination_register as usize]);
             }
             JMP_OPCODE => {
-                //writeln!(self.display, "FOUN A JMP INSTRUCTION");
                 self.program_counter =
                     self.registers[((self.instruction_register & 0x1C0) >> 6) as usize];
             }
             LEA_OPCODE => {
-                //writeln!(self.display, "FOUND AN LEA INSTRUCTION");
                 let destination_register = (self.instruction_register & 0x0E00) >> 9;
                 let offset = (((self.instruction_register & 0x1FF) << 7) as i16) >> 7;
 
@@ -302,7 +382,6 @@ impl Simulator {
                 self.update_condition_code(self.registers[destination_register as usize]);
             }
             TRAP_OPCODE => {
-                //writeln!(self.display, "FOUND A TRAP INSTRUCTION");
                 let trap_vector = (self.instruction_register & 0xFF) as usize;
                 self.registers[7] = self.program_counter;
                 self.program_counter = self.memory[trap_vector];
