@@ -85,26 +85,28 @@ impl Write for Writer {
 
 pub enum Tracer {
     NoTrace,
-    TraceFile(BufWriter<File>, u16),
+    TraceFile(BufWriter<File>, u16, bool),
 }
 
 trait Trace {
-    fn wants(&self, instruction: u16) -> bool;
-    fn write(&mut self, string: &str);
+    fn wants(&self, instruction: u16, pc: u16) -> bool;
+    fn trace(&mut self, string: &str);
 }
 
 impl Trace for Tracer {
-    fn wants(&self, instruction: u16) -> bool {
+    fn wants(&self, instruction: u16, pc: u16) -> bool {
         match self {
             Tracer::NoTrace => false,
-            Tracer::TraceFile(_, want) => (want & (1 << instruction)) != 0,
+            Tracer::TraceFile(_, want, userspace) => {
+                (!userspace || pc >= 0x3000) && (want & (1 << instruction)) != 0
+            }
         }
     }
 
-    fn write(&mut self, string: &str) {
+    fn trace(&mut self, string: &str) {
         match self {
             Tracer::NoTrace => {}
-            Tracer::TraceFile(ref mut file, _) => match write!(file, "{}", string) {
+            Tracer::TraceFile(ref mut file, _, _) => match write!(file, "{}", string) {
                 _ => {}
             },
         }
@@ -143,20 +145,18 @@ impl Simulator {
         self.load(file).expect("Unable to load file")
     }
 
-    pub fn load(mut self, file: &str) -> Result<Simulator, String> {
+    pub fn load(mut self, file: &str) -> Result<Self, String> {
         let mut file = match File::open(file) {
             Err(e) => {
                 return Err(format!("{}", e));
             }
             f => f.unwrap(),
         };
+
         let mut buffer = Vec::new();
-        match file.read_to_end(&mut buffer) {
-            Err(e) => {
-                return Err(format!("{}", e));
-            }
-            _ => {}
-        };
+        if let Err(e) = file.read_to_end(&mut buffer) {
+            return Err(format!("{}", e));
+        }
 
         let mut addr = u16::from(buffer[0]) << 8 | u16::from(buffer[1]);
 
@@ -186,18 +186,21 @@ impl Simulator {
     }
 
     fn trace(&mut self) {
-        if self
-            .tracer
-            .wants((self.instruction_register & 0xF000) >> 12)
-        {
-            self.tracer.write(
+        if self.tracer.wants(
+            (self.instruction_register & 0xF000) >> 12,
+            self.program_counter,
+        ) {
+            self.tracer.trace(
                 format!(
-                    "After executing instruction: {:04X}\n{}Program Counter: 0x{:04X}\nCondition Code: {}\n=================================\n",
+                    "After executing instruction: 0x{:04X}\n{}Program Counter: 0x{:04X}\nCondition Code: {}\n===================================\n",
                     self.instruction_register,
-                    (0..8).map(|i| format!("Register {}: 0x{:04X}\n", i, self.registers[i])).collect::<String>(),
-                    self.program_counter, self.condition_code
+                    (0..8)
+                        .map(|i| format!("Register {}: 0x{:04X}\n", i, self.registers[i]))
+                        .collect::<String>(),
+                    self.program_counter,
+                    self.condition_code
                 )
-                    .as_ref(),
+                .as_ref(),
             );
         }
     }
@@ -217,7 +220,7 @@ impl Simulator {
                 let mut buf = [0; 1];
                 match self.input.read(&mut buf) {
                     Ok(x) if x != 0 => {
-                        self.memory[KBDR] = buf[0] as u16;
+                        self.memory[KBDR] = u16::from(buf[0]);
                         0x8000
                     }
                     _ => 0x0000,
