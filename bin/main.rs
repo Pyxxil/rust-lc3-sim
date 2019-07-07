@@ -7,7 +7,7 @@ use std::io::{BufReader, BufWriter};
 use clap::{App, Arg, Values};
 use crossterm::{input, terminal, RawScreen};
 
-mod simulator;
+use lc3simlib::simulator;
 use simulator::{Reader, Simulator, Tracer, Writer};
 
 fn valid_instruction(instr: String) -> Result<(), String> {
@@ -81,7 +81,7 @@ fn get_input_device(file: Option<&str>) -> Reader {
             OpenOptions::new().read(true).open(f).unwrap(),
         ))
     } else {
-        Reader::Keyboard(input().read_async())
+        Reader::Keyboard(RawScreen::into_raw_mode(), input().read_async())
     }
 }
 
@@ -129,7 +129,7 @@ fn main() {
                 .long("os")
                 .help("The operating system to use")
                 .takes_value(true)
-                .default_value("../LC3_OS.obj"),
+                .default_value("./LC3_OS.obj"),
         )
         .arg(
             Arg::with_name("data")
@@ -167,7 +167,6 @@ fn main() {
 
     match simulator.load(args.value_of("file").unwrap()) {
         Ok(mut simulator) => {
-            let _screen = RawScreen::into_raw_mode();
             simulator.execute();
         }
         Err(e) => println!("Error: {}", e),
