@@ -8,6 +8,10 @@ edition = "2018"
 name = "lc3simlib"
 path = "src/lib.rs"
 
+
+[profile.release]
+lto = true
+
 [[bin]]
 name = "lc3sim"
 path = "bin/main.rs"

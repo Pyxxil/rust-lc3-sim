@@ -1,9 +1,13 @@
 use std::fs::File;
-use std::io;
-use std::io::{BufReader, BufWriter, Read, Write};
-use std::str;
+use std::io::{Read, Write};
 
-use crossterm::{AsyncReader, InputEvent, KeyEvent, RawScreen};
+pub mod reader;
+pub mod writer;
+pub mod tracer;
+
+pub use reader::Reader;
+pub use writer::Writer;
+pub use tracer::{Tracer, Trace};
 
 const CLK: usize = 0xFFFE;
 const KBSR: usize = 0xFE00;
@@ -27,91 +31,6 @@ const JMP_OPCODE: u16 = 0xC000;
 const RESERVED_OP: u16 = 0xD000;
 const LEA_OPCODE: u16 = 0xE000;
 const TRAP_OPCODE: u16 = 0xF000;
-
-pub enum Reader {
-    Keyboard(Result<RawScreen, io::Error>, AsyncReader),
-    InFile(BufReader<File>),
-}
-
-impl Read for Reader {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
-        match self {
-            Reader::Keyboard(_, ref mut reader) => {
-                if let Some(key) = reader.next() {
-                    if let InputEvent::Keyboard(k) = key {
-                        if let KeyEvent::Char(c) = k {
-                            buf[0] = c as u8;
-                            return Ok(1);
-                        }
-                    }
-                }
-            }
-            Reader::InFile(ref mut file) => {
-                return match file.read_exact(buf) {
-                    Ok(_) => Ok(1),
-                    _ => Ok(0),
-                };
-            }
-        }
-
-        Ok(0)
-    }
-}
-
-pub enum Writer {
-    Terminal(crossterm::Terminal),
-    OutFile(BufWriter<File>),
-}
-
-impl Write for Writer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let s = str::from_utf8(&buf).unwrap();
-        match self {
-            Writer::Terminal(ref mut terminal) => match terminal.write(s) {
-                _ => {}
-            },
-            Writer::OutFile(ref mut file) => match write!(file, "{}", s) {
-                _ => {}
-            },
-        }
-
-        Ok(s.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-pub enum Tracer {
-    NoTrace,
-    TraceFile(BufWriter<File>, u16, bool),
-}
-
-trait Trace {
-    fn wants(&self, instruction: u16, pc: u16) -> bool;
-    fn trace(&mut self, string: &str);
-}
-
-impl Trace for Tracer {
-    fn wants(&self, instruction: u16, pc: u16) -> bool {
-        match self {
-            Tracer::NoTrace => false,
-            Tracer::TraceFile(_, want, userspace) => {
-                (!userspace || pc >= 0x3000) && (want & (1 << instruction)) != 0
-            }
-        }
-    }
-
-    fn trace(&mut self, string: &str) {
-        match self {
-            Tracer::NoTrace => {}
-            Tracer::TraceFile(ref mut file, _, _) => match write!(file, "{}", string) {
-                _ => {}
-            },
-        }
-    }
-}
 
 pub struct Simulator {
     memory: [u16; 0xFFFF],
@@ -220,6 +139,12 @@ impl Simulator {
                         self.memory[KBDR] = u16::from(buf[0]);
                         0x8000
                     }
+                    Err(_) => {
+                        println!(
+                            "\n--- Program requires more input than provided in the input file ---"
+                        );
+                        std::process::exit(2);
+                    }
                     _ => 0x0000,
                 }
             }
@@ -234,15 +159,11 @@ impl Simulator {
             DDR => {
                 self.memory[DDR] = 0;
                 self.memory[DSR] = 0x8000;
-                let _ = self
-                    .display
+                let value = value as u8;
+                self.display
                     .write(
-                        format!(
-                            "{}{}",
-                            if value & 0xFF == 0xA { "\r" } else { "" },
-                            (value & 0xFF) as u8 as char
-                        )
-                        .as_ref(),
+                        format!("{}{}", if value == 0xA { "\r" } else { "" }, value as char)
+                            .as_ref(),
                     )
                     .unwrap_or_else(|_| {
                         self.memory[DSR] = 0;
@@ -270,7 +191,7 @@ impl Simulator {
                 }
             }
             ADD_OPCODE => {
-                let destination_register = (self.ir & 0x0E00) >> 9;
+                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
                 let source_one = self.registers[((self.ir & 0x01C0) >> 6) as usize] as i16;
                 let source_two = if (self.ir & 0x20) == 0 {
                     self.registers[(self.ir & 0x0007) as usize] as i16
@@ -280,7 +201,7 @@ impl Simulator {
 
                 let result = source_one.wrapping_add(source_two) as u16;
 
-                self.registers[destination_register as usize] = result;
+                self.registers[destination_register] = result;
                 self.update_cc(result);
             }
             LD_OPCODE => {
@@ -293,11 +214,11 @@ impl Simulator {
                 self.update_cc(value);
             }
             ST_OPCODE => {
-                let destination_register = (self.ir & 0x0E00) >> 9;
+                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
                 let offset = (((self.ir & 0x1FF) << 7) as i16) >> 7;
                 let address = (self.pc as i16 + offset) as u16;
 
-                self.write_memory(address, self.registers[destination_register as usize]);
+                self.write_memory(address, self.registers[destination_register]);
             }
             JSR_OPCODE => {
                 self.registers[7] = self.pc;
@@ -310,7 +231,7 @@ impl Simulator {
                 };
             }
             AND_OPCODE => {
-                let destination_register = (self.ir & 0x0E00) >> 9;
+                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
                 let source_one = self.registers[((self.ir & 0x01C0) >> 6) as usize] as i16;
                 let source_two = if (self.ir & 0x20) == 0 {
                     self.registers[(self.ir & 0x0007) as usize] as i16
@@ -320,17 +241,17 @@ impl Simulator {
 
                 let result = (source_one & source_two) as u16;
 
-                self.registers[destination_register as usize] = result;
+                self.registers[destination_register] = result;
                 self.update_cc(result);
             }
             LDR_OPCODE => {
-                let destination_register = (self.ir as u16 & 0x0E00) >> 9;
+                let destination_register = usize::from((self.ir as u16 & 0x0E00) >> 9);
                 let source_one = self.registers[((self.ir & 0x01C0) >> 6) as usize] as i16;
                 let source_two = (((self.ir & 0x3F) << 10) as i16) >> 10;
                 let address = (source_one + source_two) as u16;
                 let value = self.read_memory(address);
 
-                self.registers[destination_register as usize] = value;
+                self.registers[destination_register] = value;
                 self.update_cc(value);
             }
             STR_OPCODE => {
@@ -360,12 +281,12 @@ impl Simulator {
                 self.update_cc(value);
             }
             STI_OPCODE => {
-                let destination_register = (self.ir & 0x0E00) >> 9;
+                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
                 let offset = (((self.ir & 0x1FF) << 7) as i16) >> 7;
                 let address = (self.pc as i16 + offset) as u16;
                 let indirect = self.read_memory(address);
 
-                self.write_memory(indirect, self.registers[destination_register as usize]);
+                self.write_memory(indirect, self.registers[destination_register]);
             }
             JMP_OPCODE => {
                 self.pc = self.registers[((self.ir & 0x1C0) >> 6) as usize];

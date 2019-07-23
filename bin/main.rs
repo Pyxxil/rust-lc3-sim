@@ -21,23 +21,25 @@ fn valid_instruction(instr: String) -> Result<(), String> {
 fn get_tracer(file: Option<&str>, instructions: Option<Values>, user_only: bool) -> Tracer {
     if let Some(f) = file {
         let trace_instructions = if let Some(instrs) = instructions {
-            instrs.fold(0, |acc, instr| match instr.to_ascii_uppercase().as_ref() {
-                "BR" => acc | 0x1,
-                "ADD" => acc | 0x2,
-                "LD" => acc | 0x4,
-                "ST" => acc | 0x8,
-                "JSR" | "JSRR" => acc | 0x10,
-                "AND" => acc | 0x20,
-                "LDR" => 0x40,
-                "STR" => 0x80,
-                "RTI" => 0x100,
-                "NOT" => 0x200,
-                "LDI" => 0x400,
-                "STI" => 0x800,
-                "JMP" => 0x1000,
-                "LEA" => 0x4000,
-                "TRAP" => 0x8000,
-                _ => unreachable!(),
+            instrs.fold(0, |acc, instr| {
+                acc | match instr.to_ascii_uppercase().as_ref() {
+                    "BR" => 0x1,
+                    "ADD" => 0x2,
+                    "LD" => 0x4,
+                    "ST" => 0x8,
+                    "JSR" | "JSRR" => 0x10,
+                    "AND" => 0x20,
+                    "LDR" => 0x40,
+                    "STR" => 0x80,
+                    "RTI" => 0x100,
+                    "NOT" => 0x200,
+                    "LDI" => 0x400,
+                    "STI" => 0x800,
+                    "JMP" => 0x1000,
+                    "LEA" => 0x4000,
+                    "TRAP" => 0x8000,
+                    _ => unreachable!(),
+                }
             })
         } else {
             0xFFFF
