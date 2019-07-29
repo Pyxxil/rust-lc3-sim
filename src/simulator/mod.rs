@@ -2,12 +2,12 @@ use std::fs::File;
 use std::io::{Read, Write};
 
 pub mod reader;
-pub mod writer;
 pub mod tracer;
+pub mod writer;
 
 pub use reader::Reader;
+pub use tracer::{Trace, Tracer};
 pub use writer::Writer;
-pub use tracer::{Tracer, Trace};
 
 const CLK: usize = 0xFFFE;
 const KBSR: usize = 0xFE00;

@@ -3,6 +3,8 @@ name = "rust_lc3_simulator"
 version = "0.1.0"
 authors = ["Josh Hill <josh.hill189@gmail.com>"]
 edition = "2018"
+license = "MIT"
+description = "A Rust implementation of an LC-3 Simulator"
 
 [lib]
 name = "lc3simlib"
