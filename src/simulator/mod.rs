@@ -179,44 +179,44 @@ impl Simulator {
     fn step(&mut self) {
         let opcode = self.ir & 0xF000;
 
+        let destination_register = usize::from((self.ir & 0x0E00) >> 9);
+        let source_register_one = usize::from((self.ir & 0x01C0) >> 6);
+        let source_register_two = usize::from(self.ir & 0x0007);
+        let pc_offset_9 = (((self.ir & 0x01FF) << 7) as i16) >> 7;
+        let offset_6 = (((self.ir & 0x003F) << 10) as i16) >> 10;
+        let imm5 = (((self.ir & 0x001F) << 11) as i16) >> 11;
+
         match opcode {
             BR_OPCODE => {
-                let n = self.ir & 0x0800 != 0;
-                let z = self.ir & 0x0400 != 0;
-                let p = self.ir & 0x0200 != 0;
+                let n = (self.ir & 0x0800) != 0;
+                let z = (self.ir & 0x0400) != 0;
+                let p = (self.ir & 0x0200) != 0;
 
                 if (n && self.cc == 'N') || (z && self.cc == 'Z') || (p && self.cc == 'P') {
-                    let offset = (((self.ir & 0x1FF) << 7) as i16) >> 7;
-                    self.pc = (self.pc as i16 + offset) as u16;
+                    self.pc = (self.pc as i16 + pc_offset_9) as u16;
                 }
             }
             ADD_OPCODE => {
-                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
-                let source_one = self.registers[((self.ir & 0x01C0) >> 6) as usize] as i16;
                 let source_two = if (self.ir & 0x20) == 0 {
-                    self.registers[(self.ir & 0x0007) as usize] as i16
+                    self.registers[source_register_two] as i16
                 } else {
-                    (((self.ir & 0x1F) << 11) as i16) >> 11
+                    imm5
                 };
 
-                let result = source_one.wrapping_add(source_two) as u16;
+                let result =
+                    (self.registers[source_register_one] as i16).wrapping_add(source_two) as u16;
 
                 self.registers[destination_register] = result;
                 self.update_cc(result);
             }
             LD_OPCODE => {
-                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
-                let offset = (((self.ir & 0x1FF) << 7) as i16) >> 7;
-                let address = (self.pc as i16 + offset) as u16;
-                let value = self.read_memory(address);
+                let value = self.read_memory((self.pc as i16 + pc_offset_9) as u16);
 
                 self.registers[destination_register] = value;
                 self.update_cc(value);
             }
             ST_OPCODE => {
-                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
-                let offset = (((self.ir & 0x1FF) << 7) as i16) >> 7;
-                let address = (self.pc as i16 + offset) as u16;
+                let address = (self.pc as i16 + pc_offset_9) as u16;
 
                 self.write_memory(address, self.registers[destination_register]);
             }
@@ -224,84 +224,66 @@ impl Simulator {
                 self.registers[7] = self.pc;
 
                 self.pc = if self.ir & 0x0800 == 0 {
-                    self.registers[((self.ir & 0x1C0) >> 6) as usize]
+                    self.registers[source_register_one]
                 } else {
-                    let offset = (((self.ir & 0x1FF) << 7) as i16) >> 7;
-                    (self.pc as i16 + offset) as u16
+                    (self.pc as i16 + ((((self.ir & 0x7FF) << 5) as i16) >> 5)) as u16
                 };
             }
             AND_OPCODE => {
-                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
-                let source_one = self.registers[((self.ir & 0x01C0) >> 6) as usize] as i16;
                 let source_two = if (self.ir & 0x20) == 0 {
-                    self.registers[(self.ir & 0x0007) as usize] as i16
+                    self.registers[source_register_two] as i16
                 } else {
-                    (((self.ir & 0x1F) << 11) as i16) >> 11
+                    imm5
                 };
 
-                let result = (source_one & source_two) as u16;
+                let result = (self.registers[source_register_one] as i16 & source_two) as u16;
 
                 self.registers[destination_register] = result;
                 self.update_cc(result);
             }
             LDR_OPCODE => {
-                let destination_register = usize::from((self.ir as u16 & 0x0E00) >> 9);
-                let source_one = self.registers[((self.ir & 0x01C0) >> 6) as usize] as i16;
-                let source_two = (((self.ir & 0x3F) << 10) as i16) >> 10;
-                let address = (source_one + source_two) as u16;
-                let value = self.read_memory(address);
+                let value = self
+                    .read_memory((self.registers[source_register_one] as i16 + offset_6) as u16);
 
                 self.registers[destination_register] = value;
                 self.update_cc(value);
             }
             STR_OPCODE => {
-                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
-                let source_one = self.registers[((self.ir & 0x01C0) >> 6) as usize] as i16;
-                let source_two = (((self.ir & 0x3F) << 10) as i16) >> 10;
-                let address = (source_one + source_two) as u16;
+                let address = (self.registers[source_register_one] as i16 + offset_6) as u16;
 
                 self.write_memory(address, self.registers[destination_register]);
             }
             NOT_OPCODE => {
-                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
-                let source_one = self.registers[((self.ir & 0x01C0) >> 6) as usize];
-                let value = !source_one;
+                let value = !self.registers[source_register_one];;
 
                 self.registers[destination_register] = value;
                 self.update_cc(value);
             }
             LDI_OPCODE => {
-                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
-                let offset = (((self.ir & 0x1FF) << 7) as i16) >> 7;
-                let address = (self.pc as i16 + offset) as u16;
-                let indirect = self.read_memory(address);
+                let indirect = self.read_memory((self.pc as i16 + pc_offset_9) as u16);
                 let value = self.read_memory(indirect);
 
                 self.registers[destination_register] = value;
                 self.update_cc(value);
             }
             STI_OPCODE => {
-                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
-                let offset = (((self.ir & 0x1FF) << 7) as i16) >> 7;
-                let address = (self.pc as i16 + offset) as u16;
-                let indirect = self.read_memory(address);
+                let indirect = self.read_memory((self.pc as i16 + pc_offset_9) as u16);
 
                 self.write_memory(indirect, self.registers[destination_register]);
             }
             JMP_OPCODE => {
-                self.pc = self.registers[((self.ir & 0x1C0) >> 6) as usize];
+                self.pc = self.registers[source_register_one];
             }
             LEA_OPCODE => {
-                let destination_register = usize::from((self.ir & 0x0E00) >> 9);
-                let offset = (((self.ir & 0x1FF) << 7) as i16) >> 7;
-                let value = (self.pc as i16 + offset) as u16;
+                let address = (self.pc as i16 + pc_offset_9) as u16;
 
-                self.registers[destination_register] = value;
-                self.update_cc(value);
+                self.registers[destination_register] = address;
+                self.update_cc(address);
             }
             TRAP_OPCODE => {
-                let trap_vector = (self.ir & 0xFF) as usize;
                 self.registers[7] = self.pc;
+
+                let trap_vector = (self.ir & 0xFF) as usize;
                 self.pc = self.memory[trap_vector];
             }
 
