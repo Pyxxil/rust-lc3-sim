@@ -1,11 +1,37 @@
-use std::fs::File;
-use std::io::{BufWriter, Write, Result};
+use std::convert::From;
+use std::default::Default;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Result, Write};
 
 use std::str;
+
+use crossterm::terminal;
 
 pub enum Writer {
     Terminal(crossterm::Terminal),
     OutFile(BufWriter<File>),
+}
+
+impl From<Option<&str>> for Writer {
+    fn from(file: Option<&str>) -> Self {
+        file.and_then(|f| {
+            Some(Self::OutFile(BufWriter::new(
+                OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .create(true)
+                    .open(f)
+                    .unwrap(),
+            )))
+        })
+        .unwrap_or_default()
+    }
+}
+
+impl Default for Writer {
+    fn default() -> Self {
+        Self::Terminal(terminal())
+    }
 }
 
 impl Write for Writer {

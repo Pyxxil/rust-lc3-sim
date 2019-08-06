@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 
 pub mod reader;
 pub mod tracer;
@@ -121,7 +121,7 @@ impl Simulator {
         }
     }
 
-    pub fn execute(&mut self) {
+    pub fn execute(mut self) {
         while self.read_memory(CLK as u16) & 0x8000 != 0 {
             self.fetch();
             self.step();
@@ -139,9 +139,13 @@ impl Simulator {
                         self.memory[KBDR] = u16::from(buf[0]);
                         0x8000
                     }
+                    Err(ref e) if e.kind() == ErrorKind::Interrupted => {
+                        println!("\r\n--- ESC pressed. Quitting simulator ---");
+                        std::process::exit(1);
+                    }
                     Err(_) => {
                         println!(
-                            "\n--- Program requires more input than provided in the input file ---"
+                            "\r\n--- Program requires more input than provided in the input file ---"
                         );
                         std::process::exit(2);
                     }
@@ -160,7 +164,8 @@ impl Simulator {
                 self.memory[DDR] = 0;
                 self.memory[DSR] = 0x8000;
                 let value = value as u8;
-                self.display
+                let _ = self
+                    .display
                     .write(
                         format!("{}{}", if value == 0xA { "\r" } else { "" }, value as char)
                             .as_ref(),
