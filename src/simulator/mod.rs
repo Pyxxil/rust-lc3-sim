@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{Error, ErrorKind, Read, Write};
 
 pub mod reader;
 pub mod tracer;
@@ -15,35 +15,40 @@ const KBDR: usize = 0xFE02;
 const DSR: usize = 0xFE04;
 const DDR: usize = 0xFE06;
 
-const BR_OPCODE: u16 = 0x0000;
-const ADD_OPCODE: u16 = 0x1000;
-const LD_OPCODE: u16 = 0x2000;
-const ST_OPCODE: u16 = 0x3000;
-const JSR_OPCODE: u16 = 0x4000;
-const AND_OPCODE: u16 = 0x5000;
-const LDR_OPCODE: u16 = 0x6000;
-const STR_OPCODE: u16 = 0x7000;
-const RTI_OPCODE: u16 = 0x8000;
-const NOT_OPCODE: u16 = 0x9000;
-const LDI_OPCODE: u16 = 0xA000;
-const STI_OPCODE: u16 = 0xB000;
-const JMP_OPCODE: u16 = 0xC000;
-const RESERVED_OP: u16 = 0xD000;
-const LEA_OPCODE: u16 = 0xE000;
-const TRAP_OPCODE: u16 = 0xF000;
+const OPCODE_BR: u16 = 0x0000;
+const OPCODE_ADD: u16 = 0x1000;
+const OPCODE_LD: u16 = 0x2000;
+const OPCODE_ST: u16 = 0x3000;
+const OPCODE_JSR: u16 = 0x4000;
+const OPCODE_AND: u16 = 0x5000;
+const OPCODE_LDR: u16 = 0x6000;
+const OPCODE_STR: u16 = 0x7000;
+const OPCODE_RTI: u16 = 0x8000;
+const OPCODE_NOT: u16 = 0x9000;
+const OPCODE_LDI: u16 = 0xA000;
+const OPCODE_STI: u16 = 0xB000;
+const OPCODE_JMP: u16 = 0xC000;
+const RESERVED: u16 = 0xD000;
+const OPCODE_LEA: u16 = 0xE000;
+const OPCODE_TRAP: u16 = 0xF000;
+
+const fn sign_extend(val: u16, length: u16) -> i16 {
+    (val << (16 - length)) as i16 >> (16 - length)
+}
 
 pub struct Simulator {
     memory: [u16; 0xFFFF],
     registers: [u16; 8],
     pc: u16,
     ir: u16,
-    cc: char,
+    cc: usize,
     input: Reader,
     display: Writer,
     tracer: Tracer,
 }
 
 impl Simulator {
+    #[must_use]
     pub fn new(input: Reader, display: Writer, tracer: Tracer) -> Self {
         let mut memory = [0; 0xFFFF];
         memory[CLK] = 0x8000;
@@ -53,29 +58,27 @@ impl Simulator {
             registers: [0; 8],
             pc: 0,
             ir: 0,
-            cc: 'Z',
+            cc: 0b010,
             input,
             display,
             tracer,
         }
     }
 
+    #[must_use]
     pub fn with_operating_system(self, file: &str) -> Self {
-        self.load(file).expect("Unable to load file")
+        self.load(file).expect("Unable to load Operating System")
     }
 
-    pub fn load(mut self, file: &str) -> Result<Self, String> {
-        let mut file = match File::open(file) {
-            Err(e) => {
-                return Err(format!("{}", e));
-            }
-            f => f.unwrap(),
-        };
+    /// Load the specified file into the simulator.
+    ///
+    /// # Errors
+    /// Will return Err if the supplied file was unable to be read from
+    pub fn load(mut self, file: &str) -> Result<Self, Error> {
+        let mut file = File::open(file)?;
 
         let mut buffer = Vec::new();
-        if let Err(e) = file.read_to_end(&mut buffer) {
-            return Err(format!("{}", e));
-        }
+        file.read_to_end(&mut buffer)?;
 
         let mut address = u16::from(buffer[0]) << 8 | u16::from(buffer[1]);
 
@@ -91,11 +94,11 @@ impl Simulator {
 
     fn update_cc(&mut self, value: u16) {
         self.cc = if value == 0 {
-            'Z'
+            0b010
         } else if value & 0x8000 == 0 {
-            'P'
+            0b001
         } else {
-            'N'
+            0b100
         };
     }
 
@@ -105,7 +108,7 @@ impl Simulator {
     }
 
     fn trace(&mut self) {
-        if self.tracer.wants((self.ir & 0xF000) >> 12, self.pc) {
+        if self.tracer.wants(self.ir >> 12 & 0b1111, self.pc) {
             self.tracer.trace(
                 format!(
                     "After executing instruction: 0x{:04X}\n{}Program Counter: 0x{:04X}\nCondition Code: {}\n===================================\n",
@@ -114,7 +117,7 @@ impl Simulator {
                         .map(|i| format!("Register {}: 0x{:04X}\n", i, self.registers[i]))
                         .collect::<String>(),
                     self.pc,
-                    self.cc
+                    if self.cc & 0b100 != 0 { 'N' } else if self.cc & 0b010 == 0 { 'P' } else { 'Z' }
                 )
                 .as_ref(),
             );
@@ -122,14 +125,14 @@ impl Simulator {
     }
 
     pub fn execute(mut self) {
-        while self.read_memory(CLK as u16) & 0x8000 != 0 {
+        while self.read(CLK as u16) & 0x8000 != 0 {
             self.fetch();
             self.step();
             self.trace();
         }
     }
 
-    fn read_memory(&mut self, address: u16) -> u16 {
+    fn read(&mut self, address: u16) -> u16 {
         match address as usize {
             DDR => 0x0000,
             KBSR => {
@@ -140,36 +143,33 @@ impl Simulator {
                         0x8000
                     }
                     Err(ref e) if e.kind() == ErrorKind::Interrupted => {
-                        println!("\r\n--- ESC pressed. Quitting simulator ---");
-                        std::process::exit(1);
+                        println!("\r\n--- ESC pressed. Quitting simulator ---\r");
+                        self.memory[CLK] = 0x0000;
+                        0x0000
                     }
                     Err(_) => {
                         println!(
-                            "\r\n--- Program requires more input than provided in the input file ---"
+                            "\r\n--- Program requires more input than provided in the input file ---\r"
                         );
-                        std::process::exit(2);
+                        self.memory[CLK] = 0x0000;
+                        0x0000
                     }
                     _ => 0x0000,
                 }
             }
-            KBDR => self.memory[KBDR],
             addr => self.memory[addr],
         }
     }
 
-    pub fn write_memory(&mut self, address: u16, value: u16) {
+    pub fn write(&mut self, address: u16, value: u16) {
         match address as usize {
-            KBSR | KBDR | DSR => {}
             DDR => {
-                self.memory[DDR] = 0;
+                self.memory[DDR] = 0x0000;
                 self.memory[DSR] = 0x8000;
-                let value = value as u8;
+                let value = value as u8 as char;
                 let _ = self
                     .display
-                    .write(
-                        format!("{}{}", if value == 0xA { "\r" } else { "" }, value as char)
-                            .as_ref(),
-                    )
+                    .write(format!("{}{}", if value == '\n' { "\r" } else { "" }, value).as_ref())
                     .unwrap_or_else(|_| {
                         self.memory[DSR] = 0;
                         0
@@ -184,25 +184,21 @@ impl Simulator {
     fn step(&mut self) {
         let opcode = self.ir & 0xF000;
 
-        let destination_register = usize::from((self.ir & 0x0E00) >> 9);
-        let source_register_one = usize::from((self.ir & 0x01C0) >> 6);
-        let source_register_two = usize::from(self.ir & 0x0007);
-        let pc_offset_9 = (((self.ir & 0x01FF) << 7) as i16) >> 7;
-        let offset_6 = (((self.ir & 0x003F) << 10) as i16) >> 10;
-        let imm5 = (((self.ir & 0x001F) << 11) as i16) >> 11;
+        let destination_register = usize::from(self.ir >> 9 & 0b111);
+        let source_register_one = usize::from(self.ir >> 6 & 0b111);
+        let source_register_two = usize::from(self.ir & 0b111);
+        let pc_offset_9 = sign_extend(self.ir, 9);
+        let offset_6 = sign_extend(self.ir, 6);
+        let imm5 = sign_extend(self.ir, 5);
 
         match opcode {
-            BR_OPCODE => {
-                let n = (self.ir & 0x0800) != 0;
-                let z = (self.ir & 0x0400) != 0;
-                let p = (self.ir & 0x0200) != 0;
-
-                if (n && self.cc == 'N') || (z && self.cc == 'Z') || (p && self.cc == 'P') {
+            OPCODE_BR => {
+                if destination_register & self.cc != 0 {
                     self.pc = (self.pc as i16 + pc_offset_9) as u16;
                 }
             }
-            ADD_OPCODE => {
-                let source_two = if (self.ir & 0x20) == 0 {
+            OPCODE_ADD => {
+                let source_two = if self.ir & 0x20 == 0 {
                     self.registers[source_register_two] as i16
                 } else {
                     imm5
@@ -214,28 +210,28 @@ impl Simulator {
                 self.registers[destination_register] = result;
                 self.update_cc(result);
             }
-            LD_OPCODE => {
-                let value = self.read_memory((self.pc as i16 + pc_offset_9) as u16);
+            OPCODE_LD => {
+                let value = self.read((self.pc as i16 + pc_offset_9) as u16);
 
                 self.registers[destination_register] = value;
                 self.update_cc(value);
             }
-            ST_OPCODE => {
+            OPCODE_ST => {
                 let address = (self.pc as i16 + pc_offset_9) as u16;
 
-                self.write_memory(address, self.registers[destination_register]);
+                self.write(address, self.registers[destination_register]);
             }
-            JSR_OPCODE => {
+            OPCODE_JSR => {
                 self.registers[7] = self.pc;
 
                 self.pc = if self.ir & 0x0800 == 0 {
                     self.registers[source_register_one]
                 } else {
-                    (self.pc as i16 + ((((self.ir & 0x7FF) << 5) as i16) >> 5)) as u16
+                    (self.pc as i16 + sign_extend(self.ir, 11)) as u16
                 };
             }
-            AND_OPCODE => {
-                let source_two = if (self.ir & 0x20) == 0 {
+            OPCODE_AND => {
+                let source_two = if self.ir & 0x20 == 0 {
                     self.registers[source_register_two] as i16
                 } else {
                     imm5
@@ -246,53 +242,53 @@ impl Simulator {
                 self.registers[destination_register] = result;
                 self.update_cc(result);
             }
-            LDR_OPCODE => {
-                let value = self
-                    .read_memory((self.registers[source_register_one] as i16 + offset_6) as u16);
+            OPCODE_LDR => {
+                let value =
+                    self.read((self.registers[source_register_one] as i16 + offset_6) as u16);
 
                 self.registers[destination_register] = value;
                 self.update_cc(value);
             }
-            STR_OPCODE => {
+            OPCODE_STR => {
                 let address = (self.registers[source_register_one] as i16 + offset_6) as u16;
 
-                self.write_memory(address, self.registers[destination_register]);
+                self.write(address, self.registers[destination_register]);
             }
-            NOT_OPCODE => {
-                let value = !self.registers[source_register_one];;
+            OPCODE_NOT => {
+                let value = !self.registers[source_register_one];
 
                 self.registers[destination_register] = value;
                 self.update_cc(value);
             }
-            LDI_OPCODE => {
-                let indirect = self.read_memory((self.pc as i16 + pc_offset_9) as u16);
-                let value = self.read_memory(indirect);
+            OPCODE_LDI => {
+                let indirect = self.read((self.pc as i16 + pc_offset_9) as u16);
+                let value = self.read(indirect);
 
                 self.registers[destination_register] = value;
                 self.update_cc(value);
             }
-            STI_OPCODE => {
-                let indirect = self.read_memory((self.pc as i16 + pc_offset_9) as u16);
+            OPCODE_STI => {
+                let indirect = self.read((self.pc as i16 + pc_offset_9) as u16);
 
-                self.write_memory(indirect, self.registers[destination_register]);
+                self.write(indirect, self.registers[destination_register]);
             }
-            JMP_OPCODE => {
+            OPCODE_JMP => {
                 self.pc = self.registers[source_register_one];
             }
-            LEA_OPCODE => {
+            OPCODE_LEA => {
                 let address = (self.pc as i16 + pc_offset_9) as u16;
 
                 self.registers[destination_register] = address;
                 self.update_cc(address);
             }
-            TRAP_OPCODE => {
+            OPCODE_TRAP => {
                 self.registers[7] = self.pc;
 
                 let trap_vector = (self.ir & 0xFF) as usize;
                 self.pc = self.memory[trap_vector];
             }
 
-            RTI_OPCODE | RESERVED_OP => {}
+            OPCODE_RTI | RESERVED => {}
             _ => unreachable!(),
         }
     }

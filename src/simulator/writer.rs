@@ -14,15 +14,15 @@ pub enum Writer {
 
 impl From<Option<&str>> for Writer {
     fn from(file: Option<&str>) -> Self {
-        file.and_then(|f| {
-            Some(Self::OutFile(BufWriter::new(
+        file.map(|f| {
+            Self::OutFile(BufWriter::new(
                 OpenOptions::new()
                     .write(true)
                     .truncate(true)
                     .create(true)
                     .open(f)
                     .unwrap(),
-            )))
+            ))
         })
         .unwrap_or_default()
     }

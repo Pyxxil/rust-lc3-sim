@@ -2,20 +2,20 @@ use std::convert::From;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Error, ErrorKind, Read};
 
-use crossterm::{input, AsyncReader, InputEvent, KeyEvent, RawScreen};
+use crossterm::{input, InputEvent, KeyEvent, RawScreen, SyncReader};
 
 /// An enum used to determine where to take input to the program from
 pub enum Reader {
-    Keyboard(Result<RawScreen, Error>, AsyncReader),
+    Keyboard(Result<RawScreen, Error>, SyncReader),
     InFile(BufReader<File>),
 }
 
 impl From<Option<&str>> for Reader {
     fn from(file: Option<&str>) -> Self {
-        file.and_then(|f| {
-            Some(Self::InFile(BufReader::new(
+        file.map(|f| {
+            Self::InFile(BufReader::new(
                 OpenOptions::new().read(true).open(f).unwrap(),
-            )))
+            ))
         })
         .unwrap_or_default()
     }
@@ -23,7 +23,7 @@ impl From<Option<&str>> for Reader {
 
 impl Default for Reader {
     fn default() -> Self {
-        Self::Keyboard(RawScreen::into_raw_mode(), input().read_async())
+        Self::Keyboard(RawScreen::into_raw_mode(), input().read_sync())
     }
 }
 
@@ -51,16 +51,35 @@ impl Read for Reader {
         match self {
             // Input from the keyboard is gathered using crossterm
             Reader::Keyboard(_, ref mut reader) => {
-                let key = reader.next();
-                if let Some(InputEvent::Keyboard(KeyEvent::Char(key))) = key {
-                    buf[0] = key as u8;
-                    Ok(1)
-                } else if let Some(InputEvent::Keyboard(KeyEvent::Esc)) = key {
-                    // If the user hits the ESC key, then we want to exit. Of course, this only works if the program asks for input.
-                    Err(Error::new(ErrorKind::Interrupted, ""))
-                } else {
-                    // Basically, if this is hit nothing bad has happened, so let's just return Ok anyways (however, indicate that nothing was read)
-                    Ok(0)
+                match reader.next() {
+                    Some(InputEvent::Keyboard(KeyEvent::Char(key))) => {
+                        buf[0] = key as u8;
+                        Ok(1)
+                    }
+                    Some(InputEvent::Keyboard(KeyEvent::Left)) => {
+                        buf[0] = b'a';
+                        Ok(1)
+                    }
+                    Some(InputEvent::Keyboard(KeyEvent::Up)) => {
+                        buf[0] = b'w';
+                        Ok(1)
+                    }
+                    Some(InputEvent::Keyboard(KeyEvent::Down)) => {
+                        buf[0] = b's';
+                        Ok(1)
+                    }
+                    Some(InputEvent::Keyboard(KeyEvent::Right)) => {
+                        buf[0] = b'd';
+                        Ok(1)
+                    }
+                    Some(InputEvent::Keyboard(KeyEvent::Esc)) => {
+                        // If the user hits the ESC key, then we want to exit. Of course, this only works if the program asks for input.
+                        Err(Error::new(ErrorKind::Interrupted, ""))
+                    }
+                    _ => {
+                        // Basically, if this is hit nothing bad has happened, so let's just return Ok anyways (however, indicate that nothing was read)
+                        Ok(0)
+                    }
                 }
             }
             // Input from a file is just gathered from that file. We only read a single byte here (or, at least, buf should only have len 1)

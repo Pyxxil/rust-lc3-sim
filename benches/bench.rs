@@ -5,7 +5,6 @@ extern crate criterion;
 use criterion::Criterion;
 
 extern crate crossterm;
-use crossterm::RawScreen;
 
 extern crate lc3simlib;
 use lc3simlib::simulator::{Reader, Simulator, Tracer, Writer};
@@ -43,8 +42,7 @@ fn simulate(file: &str) {
     .load(file);
 
     match simulator {
-        Ok(mut sim) => {
-            let _screen = RawScreen::into_raw_mode();
+        Ok(sim) => {
             sim.execute();
         }
         _ => {}

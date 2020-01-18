@@ -1,6 +1,8 @@
 extern crate clap;
 extern crate crossterm;
 
+use std::iter::Iterator;
+
 use clap::{App, Arg};
 
 use lc3simlib::simulator;
@@ -73,7 +75,7 @@ fn main() {
 
     let simulator = args
         .values_of("data")
-        .and_then(|data| Some(data.collect::<Vec<_>>()))
+        .map(Iterator::collect::<Vec<_>>)
         .unwrap_or_default()
         .iter()
         .fold(
@@ -82,7 +84,7 @@ fn main() {
                 Writer::from(args.value_of("output")),
                 Tracer::from((
                     args.value_of("trace"),
-                    args.values_of("instr").and_then(|v| Some(v.collect())),
+                    args.values_of("instr").map(Iterator::collect),
                     args.is_present("user"),
                 )),
             )

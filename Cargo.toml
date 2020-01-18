@@ -19,7 +19,7 @@ name = "lc3sim"
 path = "bin/main.rs"
 
 [dependencies]
-clap = "*"
+clap = "2.33.0"
 crossterm = "0.9"
 
 [dev-dependencies]
