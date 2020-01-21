@@ -100,7 +100,7 @@ fn main() {
 
     match simulator.load(args.value_of("file").unwrap()) {
         Ok(simulator) => {
-            simulator.execute();
+            simulator.run();
         }
         Err(e) => println!("Error: {}", e),
     };
