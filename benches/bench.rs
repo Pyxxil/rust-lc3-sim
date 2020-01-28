@@ -43,13 +43,14 @@ fn simulate(file: &str) {
 
     match simulator {
         Ok(sim) => {
-            sim.execute();
+            sim.run();
         }
         _ => {}
     }
 }
 
 fn bench_simulator(c: &mut Criterion) {
+    c.bench_function("simulate Input", |b| b.iter(|| simulate("input.obj")));
     c.bench_function("simulate Fibonacci", |b| {
         b.iter(|| simulate("Fibonacci.obj"))
     });
