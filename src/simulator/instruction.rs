@@ -68,7 +68,7 @@ impl Instruction {
                 simulator.read_register(source),
             ),
             Self::JumpSubroutine(from_register, offset) => {
-                simulator.write_register(7, simulator.pc);
+                simulator.write_register_no_update(7, simulator.pc);
                 simulator.pc = if from_register {
                     simulator.read_register(((offset & 0x01C0) >> 6) as usize)
                 } else {
@@ -116,7 +116,7 @@ impl Instruction {
                 simulator.write_register(destination, (simulator.pc as i16 + offset) as u16);
             }
             Self::Trap(_, vector) => {
-                simulator.write_register(7, simulator.pc);
+                simulator.write_register_no_update(7, simulator.pc);
                 // println!("PC Before: {}, Vector: {}", simulator.pc, vector);
                 simulator.pc = simulator.read_memory(vector);
                 // println!("PC After: {}", simulator.pc);

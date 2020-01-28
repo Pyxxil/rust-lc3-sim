@@ -32,7 +32,7 @@ pub struct Simulator {
 impl Simulator {
     #[must_use]
     pub fn new(input: Reader, display: Writer, tracer: Tracer) -> Self {
-        let mut memory = [0x0000; 0xFFFF];
+        let mut memory = [0x0000u16; 0xFFFF];
         memory[CLK as usize] = 0x8000;
         memory[DSR as usize] = 0x8000;
         Self {
@@ -47,6 +47,7 @@ impl Simulator {
         }
     }
 
+    #[inline]
     #[must_use]
     pub fn with_operating_system(self, file: &str) -> Self {
         self.load(file).expect("Unable to load Operating System")
@@ -88,15 +89,18 @@ impl Simulator {
         };
     }
 
+    #[inline]
     fn fetch(&mut self) {
         self.ir = self.read_memory(self.pc);
         self.pc = self.pc.wrapping_add(1);
     }
 
+    #[inline]
     fn decode(&self) -> Instruction {
         Instruction::from(self.ir)
     }
 
+    #[inline]
     fn execute(&mut self, instruction: Instruction) {
         instruction.execute(self);
     }
@@ -135,6 +139,7 @@ impl Simulator {
         }
     }
 
+    #[inline]
     fn read_register(&self, register: usize) -> u16 {
         self.registers[register]
     }
@@ -184,11 +189,26 @@ impl Simulator {
         }
     }
 
+    #[inline]
     pub fn write_register(&mut self, register: usize, value: u16) {
-        self.registers[register] = value;
+        self.write_register_no_update(register, value);
         self.update_cc(value);
     }
 
+    #[inline]
+    pub fn write_register_no_update(&mut self, register: usize, value: u16) {
+        self.registers[register] = value;
+    }
+
+    /// Write value to a specified address in memory.
+    ///
+    /// Generally this will simply just push the value into the Simulators memory, however
+    /// the address for the Display Data Register (DDR) [0xFE06] is treated differently.
+    /// This memory-mapped register is where characters are placed to output them. This
+    /// process involves resetting the DDR to 0 once it's been written to (this may be uneccessary?)
+    /// and resetting the Display Status Register to 0 (in the off chance it's been overwritten prior).
+    /// We then take the value to write to the display, and simply print it out.
+    ///
     pub fn write_memory(&mut self, address: u16, value: u16) {
         match address {
             DDR => {

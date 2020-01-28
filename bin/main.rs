@@ -1,6 +1,7 @@
 extern crate clap;
 extern crate crossterm;
 
+use std::io::Error;
 use std::iter::Iterator;
 
 use clap::{App, Arg};
@@ -16,7 +17,7 @@ fn valid_instruction(instr: String) -> Result<(), String> {
     }
 }
 
-fn main() {
+fn main() -> Result<(), Error> {
     let args = App::new("lc3sim")
         .arg(Arg::with_name("file").required(true))
         .arg(
@@ -73,8 +74,7 @@ fn main() {
         )
         .get_matches();
 
-    let simulator = args
-        .values_of("data")
+    args.values_of("data")
         .map(Iterator::collect::<Vec<_>>)
         .unwrap_or_default()
         .iter()
@@ -96,12 +96,9 @@ fn main() {
                     panic!();
                 }
             },
-        );
+        )
+        .load(args.value_of("file").unwrap())?
+        .run();
 
-    match simulator.load(args.value_of("file").unwrap()) {
-        Ok(simulator) => {
-            simulator.run();
-        }
-        Err(e) => println!("Error: {}", e),
-    };
+    Ok(())
 }

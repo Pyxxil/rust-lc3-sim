@@ -54,9 +54,9 @@ fn bench_simulator(c: &mut Criterion) {
     c.bench_function("simulate Fibonacci", |b| {
         b.iter(|| simulate("Fibonacci.obj"))
     });
-    c.bench_function("simulate Recursive Fibonacci", |b| {
-        b.iter(|| simulate("Recursive_Fibonacci.obj"))
-    });
+    // c.bench_function("simulate Recursive Fibonacci", |b| {
+    //     b.iter(|| simulate("Recursive_Fibonacci.obj"))
+    // });
 }
 
 criterion_group!(benches, bench_simulator);
