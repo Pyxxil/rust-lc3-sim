@@ -42,12 +42,13 @@ const fn sign_extend(val: u16, length: u16) -> i16 {
 }
 
 impl Instruction {
-    pub fn execute(self, simulator: &mut Simulator) {
+    pub fn execute(self, simulator: &mut Simulator) -> Self {
         match self {
             Self::Branch(nzp, offset) => {
                 if nzp & simulator.cc != 0 {
                     simulator.pc = (simulator.pc as i16 + offset) as u16;
                 }
+                self
             }
             Self::Add(destination, source_one, from_register, source_two) => {
                 simulator.write_register(
@@ -58,15 +59,20 @@ impl Instruction {
                         source_two
                     }) as u16,
                 );
+                self
             }
             Self::Load(destination, offset) => {
                 let value = simulator.read_memory((simulator.pc as i16 + offset) as u16);
                 simulator.write_register(destination, value);
+                self
             }
-            Self::Store(source, offset) => simulator.write_memory(
-                (simulator.pc as i16 + offset) as u16,
-                simulator.read_register(source),
-            ),
+            Self::Store(source, offset) => {
+                simulator.write_memory(
+                    (simulator.pc as i16 + offset) as u16,
+                    simulator.read_register(source),
+                );
+                self
+            }
             Self::JumpSubroutine(from_register, offset) => {
                 simulator.write_register_no_update(7, simulator.pc);
                 simulator.pc = if from_register {
@@ -74,6 +80,7 @@ impl Instruction {
                 } else {
                     (simulator.pc as i16 + offset) as u16
                 };
+                self
             }
             Self::And(destination, source_one, from_register, source_two) => {
                 simulator.write_register(
@@ -85,44 +92,59 @@ impl Instruction {
                             source_two
                         })) as u16,
                 );
+                self
             }
             Self::LoadRelative(destination, source, offset) => {
                 let value =
                     simulator.read_memory((simulator.read_register(source) as i16 + offset) as u16);
                 simulator.write_register(destination, value);
+                self
             }
             Self::StoreRelative(source_one, source_two, offset) => {
                 simulator.write_memory(
                     (simulator.read_register(source_two) as i16 + offset) as u16,
                     simulator.read_register(source_one),
                 );
+                self
             }
             Self::Not(destination, source, _) => {
                 simulator.write_register(destination, !simulator.read_register(source));
+                self
             }
             Self::LoadIndirect(destination, offset) => {
                 let indirect = simulator.read_memory((simulator.pc as i16 + offset) as u16);
                 let value = simulator.read_memory(indirect);
                 simulator.write_register(destination, value);
+                self
             }
             Self::StoreIndirect(source, offset) => {
                 let indirect = simulator.read_memory((simulator.pc as i16 + offset) as u16);
                 simulator.write_memory(indirect, simulator.read_register(source));
+                self
             }
             Self::Jump(_, register, _) => {
                 simulator.pc = simulator.read_register(register);
+                self
             }
             Self::LoadEffectiveAddres(destination, offset) => {
                 simulator.write_register(destination, (simulator.pc as i16 + offset) as u16);
+                self
             }
             Self::Trap(_, vector) => {
                 simulator.write_register_no_update(7, simulator.pc);
-                // println!("PC Before: {}, Vector: {}", simulator.pc, vector);
                 simulator.pc = simulator.read_memory(vector);
-                // println!("PC After: {}", simulator.pc);
+                self
             }
-            Self::ReturnFromInterrupt(_) | Self::Reserved(_) => {}
+            Self::ReturnFromInterrupt(_) | Self::Reserved(_) => self,
         }
+    }
+
+    pub fn memory_access(self, simulator: &mut Simulator) -> Instruction {
+        self
+    }
+
+    pub fn writeback(self, simulator: &mut Simulator) -> Instruction {
+        self
     }
 }
 

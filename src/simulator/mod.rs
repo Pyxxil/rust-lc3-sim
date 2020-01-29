@@ -1,7 +1,9 @@
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Write};
 
 mod instruction;
+mod prediction;
 pub mod reader;
 pub mod tracer;
 pub mod writer;
@@ -11,6 +13,7 @@ pub use tracer::{Trace, Tracer};
 pub use writer::Writer;
 
 use instruction::*;
+use prediction::*;
 
 const CLK: u16 = 0xFFFE;
 const KBSR: u16 = 0xFE00;
@@ -21,6 +24,8 @@ const DDR: u16 = 0xFE06;
 pub struct Simulator {
     memory: [u16; 0xFFFF],
     registers: [u16; 8],
+    pipeline: VecDeque<Instruction>,
+    predictor: Predictor,
     pc: u16,
     ir: u16,
     cc: usize,
@@ -38,6 +43,8 @@ impl Simulator {
         Self {
             memory,
             registers: [0; 8],
+            pipeline: VecDeque::new(),
+            predictor: Predictor::new(),
             pc: 0,
             ir: 0,
             cc: 0b010,
@@ -101,8 +108,18 @@ impl Simulator {
     }
 
     #[inline]
-    fn execute(&mut self, instruction: Instruction) {
-        instruction.execute(self);
+    fn execute(&mut self, instruction: Instruction) -> Instruction {
+        instruction.execute(self)
+    }
+
+    #[inline]
+    fn memory_access(&mut self, instruction: Instruction) -> Instruction {
+        instruction.memory_access(self)
+    }
+
+    #[inline]
+    fn writeback(&mut self, instruction: Instruction) -> Instruction {
+        instruction.writeback(self)
     }
 
     fn trace(&mut self) {
@@ -131,11 +148,31 @@ impl Simulator {
     pub fn run(mut self) {
         while self.read_memory(CLK as u16) & 0x8000 != 0 {
             self.fetch();
-            let instruction = self.decode();
-            self.execute(instruction);
-            if self.tracer.wants(self.ir >> 12 & 0b1111, self.pc) {
-                self.trace();
+            let mut pipeline = VecDeque::new();
+            pipeline.push_front(self.decode());
+
+            if let Some(instruction) = self.pipeline.pop_back() {
+                pipeline.push_front(self.execute(instruction));
             }
+
+            if let Some(instruction) = self.pipeline.pop_back() {
+                pipeline.push_front(self.memory_access(instruction));
+            }
+
+            if let Some(instruction) = self.pipeline.pop_back() {
+                pipeline.push_front(self.writeback(instruction));
+            }
+
+            if let Some(instruction) = self.pipeline.pop_back() {
+                if self
+                    .tracer
+                    .wants(u16::from(instruction) >> 12 & 0b1111, self.pc)
+                {
+                    self.trace();
+                }
+            }
+
+            self.pipeline = pipeline;
         }
     }
 

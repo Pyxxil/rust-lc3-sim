@@ -13,7 +13,7 @@ use std::fs::OpenOptions;
 use std::io::{BufReader, BufWriter};
 
 fn simulate(file: &str) {
-    let simulator = Simulator::new(
+    if let Ok(simulator) = Simulator::new(
         Reader::InFile(BufReader::new(
             OpenOptions::new().read(true).open("test.in").unwrap(),
         )),
@@ -39,13 +39,9 @@ fn simulate(file: &str) {
         ),
     )
     .with_operating_system("LC3_OS.obj")
-    .load(file);
-
-    match simulator {
-        Ok(sim) => {
-            sim.run();
-        }
-        _ => {}
+    .load(file)
+    {
+        simulator.run();
     }
 }
 

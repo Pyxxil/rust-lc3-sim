@@ -77,7 +77,7 @@ fn main() -> Result<(), Error> {
     args.values_of("data")
         .map(Iterator::collect::<Vec<_>>)
         .unwrap_or_default()
-        .iter()
+        .into_iter()
         .fold(
             Simulator::new(
                 Reader::from(args.value_of("input")),
@@ -91,10 +91,7 @@ fn main() -> Result<(), Error> {
             .with_operating_system(args.value_of("os").unwrap()),
             |sim, data| match sim.load(data) {
                 Ok(simulator) => simulator,
-                Err(e) => {
-                    println!("Error: {}", e);
-                    panic!();
-                }
+                Err(e) => panic!("Error: {}", e),
             },
         )
         .load(args.value_of("file").unwrap())?
