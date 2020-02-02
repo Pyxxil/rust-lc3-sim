@@ -1,3 +1,4 @@
+use super::prediction::Branch;
 use super::Simulator;
 
 const OPCODE_BR: u16 = 0x0000;
@@ -33,7 +34,7 @@ pub enum Instruction {
     StoreIndirect(usize, i16),
     Jump(u16, usize, u16),
     Reserved(u16),
-    LoadEffectiveAddres(usize, i16),
+    LoadEffectiveAddress(usize, i16),
     Trap(u16, u16),
 }
 
@@ -42,13 +43,25 @@ const fn sign_extend(val: u16, length: u16) -> i16 {
 }
 
 impl Instruction {
-    pub fn execute(self, simulator: &mut Simulator) -> Self {
+    pub fn branches(&self) -> bool {
+        match *self {
+            Self::Branch(_, _)
+            | Self::JumpSubroutine(_, _)
+            | Self::Jump(_, _, _)
+            | Self::Trap(_, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn execute(self, simulator: &mut Simulator) -> (Branch, Self) {
         match self {
             Self::Branch(nzp, offset) => {
                 if nzp & simulator.cc != 0 {
                     simulator.pc = (simulator.pc as i16 + offset) as u16;
+                    (Branch::Taken, self)
+                } else {
+                    (Branch::NotTaken, self)
                 }
-                self
             }
             Self::Add(destination, source_one, from_register, source_two) => {
                 simulator.write_register(
@@ -59,19 +72,19 @@ impl Instruction {
                         source_two
                     }) as u16,
                 );
-                self
+                (Branch::None, self)
             }
             Self::Load(destination, offset) => {
                 let value = simulator.read_memory((simulator.pc as i16 + offset) as u16);
                 simulator.write_register(destination, value);
-                self
+                (Branch::None, self)
             }
             Self::Store(source, offset) => {
                 simulator.write_memory(
                     (simulator.pc as i16 + offset) as u16,
                     simulator.read_register(source),
                 );
-                self
+                (Branch::None, self)
             }
             Self::JumpSubroutine(from_register, offset) => {
                 simulator.write_register_no_update(7, simulator.pc);
@@ -80,7 +93,7 @@ impl Instruction {
                 } else {
                     (simulator.pc as i16 + offset) as u16
                 };
-                self
+                (Branch::Jump, self)
             }
             Self::And(destination, source_one, from_register, source_two) => {
                 simulator.write_register(
@@ -92,59 +105,51 @@ impl Instruction {
                             source_two
                         })) as u16,
                 );
-                self
+                (Branch::None, self)
             }
             Self::LoadRelative(destination, source, offset) => {
                 let value =
                     simulator.read_memory((simulator.read_register(source) as i16 + offset) as u16);
                 simulator.write_register(destination, value);
-                self
+                (Branch::None, self)
             }
             Self::StoreRelative(source_one, source_two, offset) => {
                 simulator.write_memory(
                     (simulator.read_register(source_two) as i16 + offset) as u16,
                     simulator.read_register(source_one),
                 );
-                self
+                (Branch::None, self)
             }
             Self::Not(destination, source, _) => {
                 simulator.write_register(destination, !simulator.read_register(source));
-                self
+                (Branch::None, self)
             }
             Self::LoadIndirect(destination, offset) => {
                 let indirect = simulator.read_memory((simulator.pc as i16 + offset) as u16);
                 let value = simulator.read_memory(indirect);
                 simulator.write_register(destination, value);
-                self
+                (Branch::None, self)
             }
             Self::StoreIndirect(source, offset) => {
                 let indirect = simulator.read_memory((simulator.pc as i16 + offset) as u16);
                 simulator.write_memory(indirect, simulator.read_register(source));
-                self
+                (Branch::None, self)
             }
             Self::Jump(_, register, _) => {
                 simulator.pc = simulator.read_register(register);
-                self
+                (Branch::Jump, self)
             }
-            Self::LoadEffectiveAddres(destination, offset) => {
+            Self::LoadEffectiveAddress(destination, offset) => {
                 simulator.write_register(destination, (simulator.pc as i16 + offset) as u16);
-                self
+                (Branch::None, self)
             }
             Self::Trap(_, vector) => {
                 simulator.write_register_no_update(7, simulator.pc);
                 simulator.pc = simulator.read_memory(vector);
-                self
+                (Branch::Jump, self)
             }
-            Self::ReturnFromInterrupt(_) | Self::Reserved(_) => self,
+            Self::ReturnFromInterrupt(_) | Self::Reserved(_) => (Branch::None, self),
         }
-    }
-
-    pub fn memory_access(self, simulator: &mut Simulator) -> Instruction {
-        self
-    }
-
-    pub fn writeback(self, simulator: &mut Simulator) -> Instruction {
-        self
     }
 }
 
@@ -194,7 +199,7 @@ impl From<u16> for Instruction {
                 (offset_6 & 0x3F) as u16,
             ),
             RESERVED => Self::Reserved(instruction & 0x0FFF),
-            OPCODE_LEA => Self::LoadEffectiveAddres(destination_register, pc_offset_9),
+            OPCODE_LEA => Self::LoadEffectiveAddress(destination_register, pc_offset_9),
             OPCODE_TRAP => Self::Trap(instruction & 0x0F00, instruction & 0x00FF),
             _ => unreachable!(),
         }
@@ -256,7 +261,7 @@ impl From<Instruction> for u16 {
                 0xC000 | bit3zero | (register << 6) as u16 | bit6zero
             }
             Instruction::Reserved(extra) => 0xD000 | extra,
-            Instruction::LoadEffectiveAddres(destination, offset) => {
+            Instruction::LoadEffectiveAddress(destination, offset) => {
                 0xE000 | (destination << 9) as u16 | offset as u16
             }
             Instruction::Trap(extra, vector) => 0xF000 | extra | (vector & 0x00FF),

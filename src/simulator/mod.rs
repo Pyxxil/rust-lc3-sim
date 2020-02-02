@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Write};
 
@@ -24,7 +23,7 @@ const DDR: u16 = 0xFE06;
 pub struct Simulator {
     memory: [u16; 0xFFFF],
     registers: [u16; 8],
-    pipeline: VecDeque<Instruction>,
+    pipeline: [Option<Instruction>; 2],
     predictor: Predictor,
     pc: u16,
     ir: u16,
@@ -43,7 +42,7 @@ impl Simulator {
         Self {
             memory,
             registers: [0; 8],
-            pipeline: VecDeque::new(),
+            pipeline: [None; 2],
             predictor: Predictor::new(),
             pc: 0,
             ir: 0,
@@ -83,6 +82,9 @@ impl Simulator {
             address += 1;
         });
 
+        self.ir = self.read_memory(self.pc);
+        self.pipeline[0] = Some(self.decode());
+
         Ok(self)
     }
 
@@ -98,8 +100,8 @@ impl Simulator {
 
     #[inline]
     fn fetch(&mut self) {
+        self.pc += 1;
         self.ir = self.read_memory(self.pc);
-        self.pc = self.pc.wrapping_add(1);
     }
 
     #[inline]
@@ -108,24 +110,14 @@ impl Simulator {
     }
 
     #[inline]
-    fn execute(&mut self, instruction: Instruction) -> Instruction {
+    fn execute(&mut self, instruction: Instruction) -> (Branch, Instruction) {
         instruction.execute(self)
-    }
-
-    #[inline]
-    fn memory_access(&mut self, instruction: Instruction) -> Instruction {
-        instruction.memory_access(self)
-    }
-
-    #[inline]
-    fn writeback(&mut self, instruction: Instruction) -> Instruction {
-        instruction.writeback(self)
     }
 
     fn trace(&mut self) {
         self.tracer.trace(
                 format!(
-                    "After executing instruction: 0x{:04X}\n{}Program Counter: 0x{:04X}\nCondition Code: {} {:#?}\n===================================\n",
+                    "After executing instruction: 0x{:04X}\n{}Program Counter: 0x{:04X}\nCondition Code: {}\n{:#?}\n===================================\n",
                     self.ir,
                     (0..8)
                         .map(|i| format!("Register {}: 0x{:04X}\n", i, self.registers[i]))
@@ -147,23 +139,45 @@ impl Simulator {
     ///
     pub fn run(mut self) {
         while self.read_memory(CLK as u16) & 0x8000 != 0 {
+            let mut pipeline = [None; 2];
+
+            // self.display
+            //     .write(format!("\nSelf.Pipeline: {:?} {:04X}\r\n", self.pipeline, self.pc).as_ref())
+            //     .unwrap();
+
             self.fetch();
-            let mut pipeline = VecDeque::new();
-            pipeline.push_front(self.decode());
+            pipeline[0] = Some(self.decode());
 
-            if let Some(instruction) = self.pipeline.pop_back() {
-                pipeline.push_front(self.execute(instruction));
+            // self.display
+            //     .write(format!("Pipeline: {:?}\r\n", pipeline).as_ref())
+            //     .unwrap();
+
+            if let Some(instruction) = self.pipeline[0] {
+                let (branch, instruction) = self.execute(instruction);
+                pipeline[1] = Some(instruction);
+
+                // self.display
+                //     .write(format!("Pipeline before Branch: {:?}\r\n", pipeline).as_ref())
+                //     .unwrap();
+
+                match branch {
+                    Branch::None => {}
+                    Branch::Jump(addr) | Branch::Taken(addr) => {
+                        self.predictor = self.predictor.transition(branch);
+                        pipeline[0] = None;
+                    }
+                    Branch::NotTaken => self.predictor = self.predictor.transition(branch),
+                }
+
+                // self.display
+                //     .write(format!("Pipeline after Branch: {:?}\r\n", pipeline).as_ref())
+                //     .unwrap();
             }
 
-            if let Some(instruction) = self.pipeline.pop_back() {
-                pipeline.push_front(self.memory_access(instruction));
-            }
-
-            if let Some(instruction) = self.pipeline.pop_back() {
-                pipeline.push_front(self.writeback(instruction));
-            }
-
-            if let Some(instruction) = self.pipeline.pop_back() {
+            if let Some(instruction) = self.pipeline[1] {
+                // self.display
+                //     .write(format!("Tracing: {:?}\r\n", instruction).as_ref())
+                //     .unwrap();
                 if self
                     .tracer
                     .wants(u16::from(instruction) >> 12 & 0b1111, self.pc)
@@ -171,6 +185,13 @@ impl Simulator {
                     self.trace();
                 }
             }
+
+            // self.display
+            //     .write(format!("Self.Pipeline after Execution: {:?}\r\n", self.pipeline).as_ref())
+            //     .unwrap();
+
+            // let mut buff = [0; 2];
+            // self.input.read(&mut buff).unwrap();
 
             self.pipeline = pipeline;
         }

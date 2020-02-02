@@ -1,7 +1,9 @@
 #[derive(Debug)]
 pub enum Branch {
-    Taken,
+    Taken(u16),
     NotTaken,
+    Jump(u16),
+    None,
 }
 
 #[derive(Debug)]
@@ -17,8 +19,16 @@ impl Predictor {
         Self::NotTaken {}
     }
 
+    pub fn predicts_branch(&self) -> bool {
+        match *self {
+            Self::StronglyNotTaken | Self::NotTaken => false,
+            Self::Taken | Self::StronglyTaken => true,
+        }
+    }
+
     pub fn transition(self, tran: Branch) -> Self {
         match tran {
+            Branch::Jump | Branch::None => self,
             Branch::Taken => match self {
                 Self::StronglyNotTaken => Self::NotTaken,
                 Self::NotTaken => Self::Taken {},
